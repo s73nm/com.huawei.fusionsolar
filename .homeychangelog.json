@@ -10,5 +10,8 @@
   },
   "1.0.3": {
     "en": "removed generic OpenAPI device"
+  },
+  "1.0.4": {
+    "en": "fix modbus pairing issue with multiple devices"
   }
 }
