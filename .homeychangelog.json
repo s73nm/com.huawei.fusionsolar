@@ -31,5 +31,8 @@
   },
   "1.0.10": {
     "en": "add Smart Charger"
+  },
+  "1.0.11": {
+    "en": "extended timeout again and implemented logging for modbus write actions"
   }
 }
