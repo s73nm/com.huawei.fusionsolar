@@ -28,5 +28,8 @@
   },
   "1.0.9": {
     "en": "increased write response timeout, increase write attempts, pause polling during writes"
+  },
+  "1.0.10": {
+    "en": "add Smart Charger"
   }
 }
