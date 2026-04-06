@@ -94,7 +94,8 @@
       "Bash(curl -s \"https://api.github.com/repos/biemond/solaredge.modbus/contents/drivers\")",
       "Bash(node -e \"let d=''''''''; process.stdin.on\\(''''data'''',c=>d+=c\\); process.stdin.on\\(''''end'''',\\(\\)=>{const j=JSON.parse\\(d\\); j.forEach\\(f=>console.log\\(f.type, f.name, f.sha\\)\\);}\\);\")",
       "Bash(curl -s \"https://api.github.com/repos/biemond/solaredge.modbus/git/blobs/e474a8cdd64e2f95a1137168d7aee92e92ef0c55\")",
-      "Bash(curl -s \"https://api.github.com/repos/biemond/solaredge.modbus/git/blobs/56e0727c8c603ca13cc5113260f75f39f5892dde\")"
+      "Bash(curl -s \"https://api.github.com/repos/biemond/solaredge.modbus/git/blobs/56e0727c8c603ca13cc5113260f75f39f5892dde\")",
+      "Bash(homey app:*)"
     ]
   }
 }

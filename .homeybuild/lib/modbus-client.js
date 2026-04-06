@@ -3,9 +3,10 @@
 const net = require('net');
 const Modbus = require('jsmodbus');
 
-const READ_DELAY_MS = 250;
-const CONNECT_TIMEOUT_MS = 15000;
+const READ_DELAY_MS = 100;
+const CONNECT_TIMEOUT_MS  = 15000;
 const RESPONSE_TIMEOUT_MS = 5000;
+const WRITE_TIMEOUT_MS    = 10000; // writes need more time than reads
 
 // Serialises all Modbus traffic to the same host:port so that multiple devices
 // (e.g. SUN2000 + LUNA2000) sharing one SDongle never open concurrent connections.
@@ -52,15 +53,18 @@ function parseBuffer(buf, dataType) {
 /**
  * Iterates over a register map and reads each register from the client.
  * Non-fatal errors per register are swallowed; the value is set to null.
+ * If `shouldAbort()` returns true the loop exits early (write is waiting).
  *
- * @param {Object} registers  { name: [address, length, dataType, label, decimalPower] }
- * @param {Object} client     jsmodbus TCP client
+ * @param {Object}   registers   { name: [address, length, dataType, label, decimalPower] }
+ * @param {Object}   client      jsmodbus TCP client
+ * @param {Function} [shouldAbort]  optional () => boolean abort callback
  * @returns {Promise<Object>} { name: scaledValue | null }
  */
-async function readRegisters(registers, client) {
+async function readRegisters(registers, client, shouldAbort) {
   const result = {};
 
   for (const [name, [address, length, dataType, , decimalPower]] of Object.entries(registers)) {
+    if (shouldAbort && shouldAbort()) break; // a write is waiting — stop reading early
     try {
       await delay(READ_DELAY_MS);
       const resp = await client.readHoldingRegisters(address, length);
@@ -85,29 +89,30 @@ async function readRegisters(registers, client) {
  * Opens a Modbus TCP connection, reads the given registers, then closes.
  * Calls are serialised per host:port so concurrent device polls never race.
  *
- * @param {string} host
- * @param {number} port
- * @param {number} unitId
- * @param {Object} registers
+ * @param {string}   host
+ * @param {number}   port
+ * @param {number}   unitId
+ * @param {Object}   registers
+ * @param {Function} [shouldAbort]  optional () => boolean — when true, stops reading early
  * @returns {Promise<Object>}
  */
-function readModbusRegisters(host, port, unitId, registers) {
+function readModbusRegisters(host, port, unitId, registers, shouldAbort) {
   return withHostLock(host, port, async () => {
     try {
-      return await _connect(host, port, unitId, (client) => readRegisters(registers, client));
+      return await _connect(host, port, unitId, (client) => readRegisters(registers, client, shouldAbort));
     } catch (err) {
       // Huawei inverters/SDongles occasionally reject the first TCP connection.
       // One automatic retry after a short pause is enough to recover reliably.
       await delay(1500);
-      return _connect(host, port, unitId, (client) => readRegisters(registers, client));
+      return _connect(host, port, unitId, (client) => readRegisters(registers, client, shouldAbort));
     }
   });
 }
 
-function _connect(host, port, unitId, fn) {
+function _connect(host, port, unitId, fn, responseTimeout = RESPONSE_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
-    const client = new Modbus.client.TCP(socket, unitId, RESPONSE_TIMEOUT_MS);
+    const client = new Modbus.client.TCP(socket, unitId, responseTimeout);
     socket.setKeepAlive(false);
 
     const connectTimeout = setTimeout(() => {
@@ -149,7 +154,23 @@ function _connect(host, port, unitId, fn) {
  * @returns {Promise<void>}
  */
 function writeModbusRegister(host, port, unitId, address, value) {
-  return withHostLock(host, port, () => _connect(host, port, unitId, (client) => client.writeSingleRegister(address, value)));
+  return withHostLock(host, port, async () => {
+    const write = (client) => client.writeSingleRegister(address, value);
+    // 4 attempts total: immediate, +1 s, +2 s, +4 s
+    // The SDongle occasionally rejects writes with an exception response (fc mismatch)
+    // when it is temporarily busy — extra retries recover reliably.
+    const delays = [1000, 2000, 4000];
+    let lastErr;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return await _connect(host, port, unitId, write, WRITE_TIMEOUT_MS);
+      } catch (err) {
+        lastErr = err;
+        if (attempt < delays.length) await delay(delays[attempt]);
+      }
+    }
+    throw lastErr;
+  });
 }
 
 module.exports = { readModbusRegisters, writeModbusRegister };

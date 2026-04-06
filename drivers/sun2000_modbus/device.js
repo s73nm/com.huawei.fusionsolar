@@ -85,7 +85,10 @@ class SUN2000ModbusDevice extends Device {
 
   async onInit() {
     this.log(`Device initialised: ${this.getName()}`);
-    this._failureCount = 0;
+    this._failureCount       = 0;
+    this._updatingFromModbus = false;
+    this._writeInProgress    = false;
+    this._controlPollCounter = 0; // throttle: read control registers every 5th poll
     await this._ensureCapabilities();
     this._registerControlListeners();
     await this._startPolling();
@@ -137,8 +140,28 @@ class SUN2000ModbusDevice extends Device {
     const unitId  = () => parseInt(this.getSetting('modbus_id'), 10) || 1;
 
     for (const [cap, regAddress] of Object.entries(CONTROL_WRITE_MAP)) {
-      this.registerCapabilityListener(cap, async (value) => {
-        await writeModbusRegister(host(), port(), unitId(), regAddress, parseInt(value, 10));
+      this.registerCapabilityListener(cap, (value) => {
+        if (this._updatingFromModbus) return; // ignore updates triggered by poll reads
+
+        const previousValue = this.getCapabilityValue(cap);
+        this.log(`Write start  [${cap} → reg ${regAddress}] value=${value}`);
+        this._writeInProgress = true;
+
+        // Fire-and-forget: return immediately so Homey never shows a UI timeout.
+        // On failure the capability is reverted to its previous value.
+        writeModbusRegister(host(), port(), unitId(), regAddress, parseInt(value, 10))
+          .then(() => {
+            this.log(`Write OK     [${cap} → reg ${regAddress}]`);
+          })
+          .catch(async (err) => {
+            this.error(`Write failed [${cap} → reg ${regAddress}]:`, err.message);
+            this._updatingFromModbus = true;
+            await this._set(cap, previousValue).catch(() => {});
+            this._updatingFromModbus = false;
+          })
+          .finally(() => {
+            this._writeInProgress = false;
+          });
       });
     }
   }
@@ -170,6 +193,7 @@ class SUN2000ModbusDevice extends Device {
 
   async _fetchAndUpdate() {
     if (this._fetchInProgress) return;
+    if (this._writeInProgress) return; // pause poll while a write is queued/running
     this._fetchInProgress = true;
 
     const address = this.getSetting('address');
@@ -183,8 +207,10 @@ class SUN2000ModbusDevice extends Device {
     const port     = parseInt(this.getSetting('port'), 10) || 502;
     const modbusId = parseInt(this.getSetting('modbus_id'), 10) || 1;
 
+    const abort = () => this._writeInProgress;
+
     try {
-      const data = await readModbusRegisters(address, port, modbusId, REGISTERS);
+      const data = await readModbusRegisters(address, port, modbusId, REGISTERS, abort);
 
       const prevPower = this.getCapabilityValue('measure_power');
       const newPower  = data.inputPower ?? 0;
@@ -203,8 +229,14 @@ class SUN2000ModbusDevice extends Device {
         await this._set('huawei_status', statusLabel(data.deviceStatus));
       }
 
-      await this._fetchPowerMeter(address, port, modbusId);
-      await this._fetchControl(address, port, modbusId);
+      await this._fetchPowerMeter(address, port, modbusId, abort);
+
+      // Read control registers every 5th poll — they change rarely and the read
+      // adds ~1 s of connection time that delays pending writes.
+      this._controlPollCounter = (this._controlPollCounter + 1) % 5;
+      if (this._controlPollCounter === 0) {
+        await this._fetchControl(address, port, modbusId);
+      }
 
       if (prevPower !== newPower) {
         await this.homey.flow
@@ -229,9 +261,9 @@ class SUN2000ModbusDevice extends Device {
     }
   }
 
-  async _fetchPowerMeter(address, port, modbusId) {
+  async _fetchPowerMeter(address, port, modbusId, shouldAbort) {
     try {
-      const meter = await readModbusRegisters(address, port, modbusId, POWER_METER_REGISTERS);
+      const meter = await readModbusRegisters(address, port, modbusId, POWER_METER_REGISTERS, shouldAbort);
 
       if (!isPowerMeterDataValid(meter)) {
         for (const cap of POWER_METER_CAPABILITIES) {
@@ -244,17 +276,8 @@ class SUN2000ModbusDevice extends Device {
         if (!this.hasCapability(cap)) await this.addCapability(cap);
       }
 
-      await this._set('measure_voltage.grid_phase1',  meter.gridPhaseAVoltage ?? null);
-      await this._set('measure_voltage.grid_phase2',  meter.gridPhaseBVoltage ?? null);
-      await this._set('measure_voltage.grid_phase3',  meter.gridPhaseCVoltage ?? null);
-      await this._set('measure_current.grid_phase1',  meter.gridPhaseACurrent ?? null);
-      await this._set('measure_current.grid_phase2',  meter.gridPhaseBCurrent ?? null);
-      await this._set('measure_current.grid_phase3',  meter.gridPhaseCCurrent ?? null);
       const negate = (v) => (v !== null && v !== undefined) ? -v : null;
       await this._set('measure_power.grid_active_power', negate(meter.powerMeterActivePower));
-      await this._set('measure_power.grid_phase1',    negate(meter.gridPhaseAPower));
-      await this._set('measure_power.grid_phase2',    negate(meter.gridPhaseBPower));
-      await this._set('measure_power.grid_phase3',    negate(meter.gridPhaseCPower));
       await this._set('meter_power.grid_export',      meter.gridExportedEnergy ?? null);
       await this._set('meter_power.grid_import',      meter.gridAccumulatedEnergy ?? null);
 
@@ -265,14 +288,17 @@ class SUN2000ModbusDevice extends Device {
 
   async _fetchControl(address, port, modbusId) {
     try {
-      const ctrl = await readModbusRegisters(address, port, modbusId, INVERTER_CONTROL_REGISTERS);
+      const ctrl = await readModbusRegisters(address, port, modbusId, INVERTER_CONTROL_REGISTERS, () => this._writeInProgress);
 
       const toEnum = (v) => (v !== null && v !== undefined) ? String(v) : null;
 
+      this._updatingFromModbus = true;
       await this._set('activepower_controlmode', toEnum(ctrl.activePowerControlMode));
 
     } catch (err) {
       this.log('Control register read skipped:', err.message);
+    } finally {
+      this._updatingFromModbus = false;
     }
   }
 

@@ -144,6 +144,30 @@ function isEmmaDataValid(data) {
   return true;
 }
 
+// Huawei SmartHEMS Smart Charger registers
+// Source: SmartHEMS MODBUS Interface Definitions V100R024C10SPC112 (2025-06-10), Table 3-3
+//
+// Gain column = divisor: actual_value = register_value / gain
+// U32 / kW / gain 10  → decimalPower -1
+// U32 / V  / gain 10  → decimalPower -1
+// U32 / kWh/ gain 1000→ decimalPower -3
+// I32 / °C / gain 10  → decimalPower -1
+const SMARTCHARGER_REGISTERS = {
+  offeringName:       [30000, 15, 'STRING', 'Offering Name',              0],
+  ratedPower:         [30076,  2, 'UINT32', 'Rated Power (kW)',           -1], // raw/10 = kW
+  phaseAVoltage:      [30500,  2, 'UINT32', 'Phase A Voltage (V)',        -1], // raw/10 = V
+  phaseBVoltage:      [30502,  2, 'UINT32', 'Phase B Voltage (V)',        -1],
+  phaseCVoltage:      [30504,  2, 'UINT32', 'Phase C Voltage (V)',        -1],
+  totalEnergyCharged: [30506,  2, 'UINT32', 'Total Energy Charged (kWh)', -3], // raw/1000 = kWh
+  chargerTemperature: [30508,  2, 'INT32',  'Charger Temperature (°C)',   -1], // raw/10 = °C
+};
+
+function isSmartChargerDataValid(data) {
+  // offeringName must be a non-empty string
+  if (!data.offeringName || typeof data.offeringName !== 'string') return false;
+  return true;
+}
+
 // Writable control registers (47xxx address range)
 // These can be both read and written via Modbus
 const CONTROL_REGISTERS = {
@@ -180,8 +204,10 @@ module.exports = {
   BATTERY_REGISTERS,
   CONTROL_REGISTERS,
   EMMA_REGISTERS,
+  SMARTCHARGER_REGISTERS,
   isBatteryDataValid,
   isPowerMeterDataValid,
   isEmmaDataValid,
+  isSmartChargerDataValid,
   statusLabel,
 };

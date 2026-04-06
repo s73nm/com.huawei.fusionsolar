@@ -37,7 +37,9 @@
       "noAddress": "No IP address configured. Please check the device settings.",
       "fetchFailed": "Modbus read failed",
       "batteryNotDetected": "LUNA2000 battery not detected.",
-      "meterNotDetected": "DTSU666 power meter not detected."
+      "meterNotDetected": "DTSU666 power meter not detected.",
+      "chargerNotDetected": "Smart Charger not detected.",
+      "emmaNotDetected": "EMMA module not detected."
     }
   }
 }

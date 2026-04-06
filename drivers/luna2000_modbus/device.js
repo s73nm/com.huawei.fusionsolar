@@ -63,10 +63,14 @@ class LUNA2000ModbusDevice extends Device {
 
   async onInit() {
     this.log(`Device initialised: ${this.getName()}`);
-    this._prevChargingState = null;
-    this._failureCount      = 0;
+    this._prevChargingState  = null;
+    this._failureCount       = 0;
+    this._updatingFromModbus = false;
+    this._writeInProgress    = false;
+    this._controlPollCounter = 0; // throttle: read control registers every 5th poll
     await this._ensureCapabilities();
     this._registerControlListeners();
+    this._registerFlowActions();
     await this._startPolling();
 
     this._fetchAndUpdate().catch((err) => {
@@ -113,10 +117,60 @@ class LUNA2000ModbusDevice extends Device {
     const unitId = () => parseInt(this.getSetting('modbus_id'), 10) || 1;
 
     for (const [cap, regAddress] of Object.entries(CONTROL_WRITE_MAP)) {
-      this.registerCapabilityListener(cap, async (value) => {
-        await writeModbusRegister(host(), port(), unitId(), regAddress, parseInt(value, 10));
+      this.registerCapabilityListener(cap, (value) => {
+        if (this._updatingFromModbus) return; // ignore updates triggered by poll reads
+
+        const previousValue = this.getCapabilityValue(cap);
+        this.log(`Write start  [${cap} → reg ${regAddress}] value=${value}`);
+        this._writeInProgress = true;
+
+        // Fire-and-forget: return immediately so Homey never shows a UI timeout.
+        // On failure the capability is reverted to its previous value.
+        writeModbusRegister(host(), port(), unitId(), regAddress, parseInt(value, 10))
+          .then(() => {
+            this.log(`Write OK     [${cap} → reg ${regAddress}]`);
+          })
+          .catch(async (err) => {
+            this.error(`Write failed [${cap} → reg ${regAddress}]:`, err.message);
+            this._updatingFromModbus = true;
+            await this._set(cap, previousValue).catch(() => {});
+            this._updatingFromModbus = false;
+          })
+          .finally(() => {
+            this._writeInProgress = false;
+          });
       });
     }
+  }
+
+  // ─── Flow actions ──────────────────────────────────────────────────────────
+
+  _registerFlowActions() {
+    const host   = () => this.getSetting('address');
+    const port   = () => parseInt(this.getSetting('port'), 10) || 502;
+    const unitId = () => parseInt(this.getSetting('modbus_id'), 10) || 1;
+
+    this.homey.flow
+      .getActionCard('luna2000_set_force_charge_discharge')
+      .registerRunListener(async ({ mode }) => {
+        const value = parseInt(mode, 10);
+        const reg = CONTROL_WRITE_MAP.storage_force_charge_discharge;
+        this.log(`Write start  [luna2000_set_force_charge_discharge → reg ${reg}] value=${value}`);
+        this._writeInProgress = true;
+        try {
+          // Flow actions: await the write so the flow can report errors properly.
+          await writeModbusRegister(host(), port(), unitId(), reg, value);
+          this.log(`Write OK     [luna2000_set_force_charge_discharge → reg ${reg}]`);
+          this._updatingFromModbus = true;
+          await this._set('storage_force_charge_discharge', mode).catch(() => {});
+        } catch (err) {
+          this.error(`Write failed [luna2000_set_force_charge_discharge → reg ${reg}]:`, err.message);
+          throw err;
+        } finally {
+          this._updatingFromModbus = false;
+          this._writeInProgress = false;
+        }
+      });
   }
 
   // ─── Polling ───────────────────────────────────────────────────────────────
@@ -146,6 +200,7 @@ class LUNA2000ModbusDevice extends Device {
 
   async _fetchAndUpdate() {
     if (this._fetchInProgress) return;
+    if (this._writeInProgress) return; // pause poll while a write is queued/running
     this._fetchInProgress = true;
 
     const address = this.getSetting('address');
@@ -159,8 +214,10 @@ class LUNA2000ModbusDevice extends Device {
     const port     = parseInt(this.getSetting('port'), 10) || 502;
     const modbusId = parseInt(this.getSetting('modbus_id'), 10) || 1;
 
+    const abort = () => this._writeInProgress;
+
     try {
-      const batt = await readModbusRegisters(address, port, modbusId, BATTERY_REGISTERS);
+      const batt = await readModbusRegisters(address, port, modbusId, BATTERY_REGISTERS, abort);
 
       if (!isBatteryDataValid(batt)) {
         this._failureCount += 1;
@@ -194,7 +251,12 @@ class LUNA2000ModbusDevice extends Device {
       await this._set('meter_power.today_batt_input',  batt.storageDayCharge ?? null);
       await this._set('meter_power.today_batt_output', batt.storageDayDischarge ?? null);
 
-      await this._fetchControl(address, port, modbusId);
+      // Read control registers every 5th poll — they change rarely and the read
+      // adds ~1 s of connection time that delays pending writes.
+      this._controlPollCounter = (this._controlPollCounter + 1) % 5;
+      if (this._controlPollCounter === 0) {
+        await this._fetchControl(address, port, modbusId);
+      }
 
       if (prevSoc !== soc) {
         await this.homey.flow
@@ -229,10 +291,11 @@ class LUNA2000ModbusDevice extends Device {
 
   async _fetchControl(address, port, modbusId) {
     try {
-      const ctrl = await readModbusRegisters(address, port, modbusId, STORAGE_CONTROL_REGISTERS);
+      const ctrl = await readModbusRegisters(address, port, modbusId, STORAGE_CONTROL_REGISTERS, () => this._writeInProgress);
 
       const toEnum = (v) => (v !== null && v !== undefined) ? String(v) : null;
 
+      this._updatingFromModbus = true;
       await this._set('storage_working_mode_settings',        toEnum(ctrl.storageWorkingMode));
       await this._set('storage_force_charge_discharge',       toEnum(ctrl.storageForceChargeDischarge));
       await this._set('storage_excess_pv_energy_use_in_tou',  toEnum(ctrl.storageExcessPvEnergyUseInTou));
@@ -240,6 +303,8 @@ class LUNA2000ModbusDevice extends Device {
 
     } catch (err) {
       this.log('Control register read skipped:', err.message);
+    } finally {
+      this._updatingFromModbus = false;
     }
   }
 
