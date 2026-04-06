@@ -34,5 +34,8 @@
   },
   "1.0.11": {
     "en": "extended timeout again and implemented logging for modbus write actions"
+  },
+  "1.0.12": {
+    "en": "rewrite EMMA integration"
   }
 }
