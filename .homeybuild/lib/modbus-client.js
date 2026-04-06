@@ -143,7 +143,7 @@ function _connect(host, port, unitId, fn, responseTimeout = RESPONSE_TIMEOUT_MS)
 }
 
 /**
- * Writes a single 16-bit register value via Modbus TCP.
+ * Writes a single 16-bit register value via Modbus TCP (FC06).
  * Serialised through the same per-host lock as reads.
  *
  * @param {string} host
@@ -173,4 +173,34 @@ function writeModbusRegister(host, port, unitId, address, value) {
   });
 }
 
-module.exports = { readModbusRegisters, writeModbusRegister };
+/**
+ * Writes a 32-bit unsigned integer to two consecutive registers via Modbus TCP (FC16).
+ * Used for U32 registers where FC06 (single-register) cannot span two words atomically.
+ *
+ * @param {string} host
+ * @param {number} port
+ * @param {number} unitId
+ * @param {number} address   Starting register address (high word)
+ * @param {number} value     32-bit unsigned integer value to write
+ * @returns {Promise<void>}
+ */
+function writeModbusU32(host, port, unitId, address, value) {
+  return withHostLock(host, port, async () => {
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32BE(value >>> 0, 0); // big-endian U32
+    const write = (client) => client.writeMultipleRegisters(address, buf);
+    const delays = [1000, 2000, 4000];
+    let lastErr;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return await _connect(host, port, unitId, write, WRITE_TIMEOUT_MS);
+      } catch (err) {
+        lastErr = err;
+        if (attempt < delays.length) await delay(delays[attempt]);
+      }
+    }
+    throw lastErr;
+  });
+}
+
+module.exports = { readModbusRegisters, writeModbusRegister, writeModbusU32 };

@@ -6,7 +6,7 @@ const {
   LUNA2000_EMMA_CONTROL_REGISTERS,
   isLuna2000EmmaDataValid,
 } = require('../../lib/modbus-registers');
-const { readModbusRegisters, writeModbusRegister } = require('../../lib/modbus-client');
+const { readModbusRegisters, writeModbusRegister, writeModbusU32 } = require('../../lib/modbus-client');
 
 const DEFAULT_INTERVAL_S = 60;
 const MIN_INTERVAL_S = 10;
@@ -25,6 +25,9 @@ const REQUIRED_CAPABILITIES = [
   // Values 0 (Adaptive), 1 (Fixed), 3 (TOU LG) are reserved on EMMA and should not be used.
   'storage_working_mode_settings',
   'storage_excess_pv_energy_use_in_tou', // reg 40001: 0=Feed to Grid, 1=Charge Battery ✓
+  'measure_battery.backup',              // Backup power SOC (%)
+  'meter_power.chargeable_capacity',     // ESS chargeable capacity (kWh)
+  'meter_power.dischargeable_capacity',  // ESS dischargeable capacity (kWh)
 ];
 
 // Maps writable enum capability → EMMA Modbus register address (40xxx)
@@ -37,11 +40,12 @@ class LUNA2000EmmaModbusDevice extends Device {
 
   async onInit() {
     this.log(`Device initialised: ${this.getName()}`);
-    this._prevChargingState  = null;
-    this._failureCount       = 0;
-    this._updatingFromModbus = false;
-    this._writeInProgress    = false;
-    this._controlPollCounter = 0;
+    this._prevChargingState          = null;
+    this._failureCount               = 0;
+    this._updatingFromModbus         = false;
+    this._updatingSettingFromModbus  = false;
+    this._writeInProgress            = false;
+    this._controlPollCounter         = 0;
     await this._ensureCapabilities();
     this._registerControlListeners();
     await this._startPolling();
@@ -51,13 +55,24 @@ class LUNA2000EmmaModbusDevice extends Device {
     });
   }
 
-  async onSettings({ changedKeys }) {
+  async onSettings({ newSettings, changedKeys }) {
     if (['address', 'port', 'modbus_id', 'poll_interval'].some((k) => changedKeys.includes(k))) {
       await this._stopPolling();
       await this._startPolling();
       this._fetchAndUpdate().catch((err) => {
         this.error('Fetch after settings change failed:', err.message);
       });
+    }
+
+    if (changedKeys.includes('max_grid_charge_power') && !this._updatingSettingFromModbus) {
+      const address  = this.getSetting('address');
+      const port     = parseInt(this.getSetting('port'), 10) || 502;
+      const modbusId = parseInt(this.getSetting('modbus_id'), 10) || 0;
+      const kw       = parseFloat(newSettings.max_grid_charge_power) || 0;
+      const raw      = Math.round(kw * 1000);
+      this.log(`Write max grid charge power: ${kw} kW → reg 40002 raw=${raw}`);
+      writeModbusU32(address, port, modbusId, 40002, raw)
+        .catch((err) => this.error('Max grid charge power write failed:', err.message));
     }
   }
 
@@ -165,14 +180,17 @@ class LUNA2000EmmaModbusDevice extends Device {
 
       const prevSoc = this.getCapabilityValue('measure_battery');
 
-      await this._set('measure_power',                power);
-      await this._set('measure_battery',              soc);
-      await this._set('meter_power.charged',          d.totalChargedEnergy    ?? null);
-      await this._set('meter_power.discharged',       d.totalDischargedEnergy ?? null);
-      await this._set('measure_power.batt_charge',    Math.max(0,  power));
-      await this._set('measure_power.batt_discharge', Math.max(0, -power));
-      await this._set('meter_power.today_batt_input',  d.chargedToday    ?? null);
-      await this._set('meter_power.today_batt_output', d.dischargedToday ?? null);
+      await this._set('measure_power',                    power);
+      await this._set('measure_battery',                  soc);
+      await this._set('meter_power.charged',              d.totalChargedEnergy      ?? null);
+      await this._set('meter_power.discharged',           d.totalDischargedEnergy   ?? null);
+      await this._set('measure_power.batt_charge',        Math.max(0,  power));
+      await this._set('measure_power.batt_discharge',     Math.max(0, -power));
+      await this._set('meter_power.today_batt_input',     d.chargedToday            ?? null);
+      await this._set('meter_power.today_batt_output',    d.dischargedToday         ?? null);
+      await this._set('measure_battery.backup',           d.backupSoc               ?? null);
+      await this._set('meter_power.chargeable_capacity',  d.essChargeableCapacity   ?? null);
+      await this._set('meter_power.dischargeable_capacity', d.essDischargableCapacity ?? null);
 
       // Read control registers every 5th poll — they change rarely
       this._controlPollCounter = (this._controlPollCounter + 1) % 5;
@@ -224,11 +242,24 @@ class LUNA2000EmmaModbusDevice extends Device {
       this._updatingFromModbus = true;
       await this._set('storage_working_mode_settings',       toEnum(ctrl.essControlMode));
       await this._set('storage_excess_pv_energy_use_in_tou', toEnum(ctrl.preferredUseSurplusPv));
+      this._updatingFromModbus = false;
+
+      // Sync max grid charging power setting if it differs from what the EMMA reports
+      if (ctrl.maxGridChargingPower !== null && ctrl.maxGridChargingPower !== undefined) {
+        const currentKw = parseFloat(this.getSetting('max_grid_charge_power')) || 0;
+        if (Math.abs(ctrl.maxGridChargingPower - currentKw) > 0.05) {
+          this._updatingSettingFromModbus = true;
+          await this.setSettings({ max_grid_charge_power: ctrl.maxGridChargingPower })
+            .catch((err) => this.log('setSettings max_grid_charge_power failed:', err.message));
+          this._updatingSettingFromModbus = false;
+        }
+      }
 
     } catch (err) {
       this.log('Control register read skipped:', err.message);
     } finally {
-      this._updatingFromModbus = false;
+      this._updatingFromModbus         = false;
+      this._updatingSettingFromModbus  = false;
     }
   }
 

@@ -117,6 +117,9 @@ const EMMA_REGISTERS = {
 
   // ── State of charge (%) ───────────────────────────────────────────────────
   soc:                   [30368, 1, 'UINT16', 'State of Charge (%)',               -2],
+  essChargeableCapacity: [30369, 2, 'UINT32', 'ESS Chargeable Capacity (kWh)',     -3],
+  essDischargableCapacity:[30371, 2, 'UINT32', 'ESS Dischargeable Capacity (kWh)', -3],
+  backupSoc:             [30373, 1, 'UINT16', 'Backup Power SOC (%)',               -2],
 
   // ── Cumulative energy totals (kWh) ────────────────────────────────────────
   totalSupplyFromGrid:   [30338, 4, 'UINT64', 'Total Supply from Grid (kWh)',      -2],  // Netzbezug gesamt
@@ -209,19 +212,23 @@ function isSun2000EmmaDataValid(data) {
 // These are entries from EMMA_REGISTERS that represent battery state.
 // Re-exported as a named subset so luna2000_emma_modbus driver can import them directly.
 const LUNA2000_EMMA_DATA_REGISTERS = {
-  batteryPower:          EMMA_REGISTERS.batteryPower,          // 30360, I32, W,   decimalPower 0
-  soc:                   EMMA_REGISTERS.soc,                   // 30368, U16, %,   decimalPower -2
-  totalChargedEnergy:    EMMA_REGISTERS.totalChargedEnergy,    // 30308, U64, kWh, decimalPower -2
-  totalDischargedEnergy: EMMA_REGISTERS.totalDischargedEnergy, // 30314, U64, kWh, decimalPower -2
-  chargedToday:          EMMA_REGISTERS.chargedToday,          // 30306, U32, kWh, decimalPower -2
-  dischargedToday:       EMMA_REGISTERS.dischargedToday,       // 30312, U32, kWh, decimalPower -2
+  batteryPower:            EMMA_REGISTERS.batteryPower,            // 30360, I32,    W,   decimalPower 0
+  soc:                     EMMA_REGISTERS.soc,                     // 30368, U16,    %,   decimalPower -2
+  essChargeableCapacity:   EMMA_REGISTERS.essChargeableCapacity,   // 30369, U32,    kWh, decimalPower -3
+  essDischargableCapacity: EMMA_REGISTERS.essDischargableCapacity, // 30371, U32,    kWh, decimalPower -3
+  backupSoc:               EMMA_REGISTERS.backupSoc,               // 30373, U16,    %,   decimalPower -2
+  totalChargedEnergy:      EMMA_REGISTERS.totalChargedEnergy,      // 30308, U64,    kWh, decimalPower -2
+  totalDischargedEnergy:   EMMA_REGISTERS.totalDischargedEnergy,   // 30314, U64,    kWh, decimalPower -2
+  chargedToday:            EMMA_REGISTERS.chargedToday,            // 30306, U32,    kWh, decimalPower -2
+  dischargedToday:         EMMA_REGISTERS.dischargedToday,         // 30312, U32,    kWh, decimalPower -2
 };
 
 // EMMA writable control registers (40xxx address range)
 // These differ from the SUN2000 47xxx control registers.
 const LUNA2000_EMMA_CONTROL_REGISTERS = {
-  essControlMode:        [40000, 1, 'UINT16', 'ESS Control Mode',                  0],
-  preferredUseSurplusPv: [40001, 1, 'UINT16', 'Preferred Use of Surplus PV Power', 0],
+  essControlMode:        [40000, 1, 'UINT16', 'ESS Control Mode',                        0],
+  preferredUseSurplusPv: [40001, 1, 'UINT16', 'Preferred Use of Surplus PV Power',       0],
+  maxGridChargingPower:  [40002, 2, 'UINT32', 'Max Grid Charging Power (kW)',            -3],
 };
 
 function isLuna2000EmmaDataValid(data) {
