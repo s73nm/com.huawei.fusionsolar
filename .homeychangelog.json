@@ -37,5 +37,8 @@
   },
   "1.0.12": {
     "en": "rewrite EMMA integration"
+  },
+  "1.0.13": {
+    "en": "add action flows on luna2000 emma modbus device and fixed some translation issues"
   }
 }

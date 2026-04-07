@@ -1,6 +1,6 @@
 {
   "id": "com.huawei.fusionsolar",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "compatibility": ">=12.4.5",
   "runtime": "nodejs",
   "sdk": 3,
@@ -1329,7 +1329,7 @@
     {
       "id": "luna2000_emma_modbus",
       "name": {
-        "en": "Batterie LUNA 2000 (EMMA Modbus)",
+        "en": "Battery LUNA 2000 (EMMA Modbus)",
         "de": "Batterie LUNA 2000 (EMMA Modbus)"
       },
       "class": "battery",
@@ -1716,7 +1716,7 @@
     {
       "id": "powermeter_emma_modbus",
       "name": {
-        "en": "Energiezähler (EMMA Modbus)",
+        "en": "Power Meter (EMMA Modbus)",
         "de": "Energiezähler (EMMA Modbus)"
       },
       "class": "sensor",
@@ -2191,7 +2191,7 @@
     {
       "id": "fusionsolar_openapi_meter",
       "name": {
-        "en": "Energy Meter (OpenAPI)",
+        "en": "Power Meter (OpenAPI)",
         "de": "Energiezähler (OpenAPI)"
       },
       "class": "sensor",
@@ -2601,6 +2601,112 @@
       }
     ],
     "actions": [
+      {
+        "id": "luna2000_emma_set_working_mode",
+        "title": {
+          "en": "Set storage working mode",
+          "de": "Speicher-Betriebsmodus setzen"
+        },
+        "titleFormatted": {
+          "en": "Set storage working mode to [[mode]]",
+          "de": "Speicher-Betriebsmodus auf [[mode]] setzen"
+        },
+        "hint": {
+          "en": "Sets the ESS working mode of the LUNA2000 battery via EMMA Modbus (register 40000).",
+          "de": "Setzt den ESS-Betriebsmodus der LUNA2000-Batterie über EMMA Modbus (Register 40000)."
+        },
+        "args": [
+          {
+            "type": "device",
+            "name": "device",
+            "filter": "driver_id=luna2000_emma_modbus"
+          },
+          {
+            "type": "dropdown",
+            "name": "mode",
+            "title": {
+              "en": "Mode",
+              "de": "Modus"
+            },
+            "values": [
+              {
+                "id": "2",
+                "label": {
+                  "en": "Maximise Self-Consumption",
+                  "de": "Eigenverbrauch maximieren"
+                }
+              },
+              {
+                "id": "4",
+                "label": {
+                  "en": "Fully Fed to Grid",
+                  "de": "Volleinspeisung"
+                }
+              },
+              {
+                "id": "5",
+                "label": {
+                  "en": "Time of Use (TOU)",
+                  "de": "Zeitabhängige Nutzung (TOU)"
+                }
+              },
+              {
+                "id": "6",
+                "label": {
+                  "en": "Third-party Scheduling",
+                  "de": "Drittanbieter-Steuerung"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "luna2000_emma_set_excess_pv",
+        "title": {
+          "en": "Set excess PV energy use (TOU)",
+          "de": "PV-Überschuss-Nutzung setzen (TOU)"
+        },
+        "titleFormatted": {
+          "en": "Set excess PV energy use to [[mode]]",
+          "de": "PV-Überschuss-Nutzung auf [[mode]] setzen"
+        },
+        "hint": {
+          "en": "Sets what happens to surplus PV power in TOU mode via EMMA Modbus (register 40001).",
+          "de": "Legt fest, was mit überschüssigem PV-Strom im TOU-Modus geschieht, über EMMA Modbus (Register 40001)."
+        },
+        "args": [
+          {
+            "type": "device",
+            "name": "device",
+            "filter": "driver_id=luna2000_emma_modbus"
+          },
+          {
+            "type": "dropdown",
+            "name": "mode",
+            "title": {
+              "en": "Mode",
+              "de": "Modus"
+            },
+            "values": [
+              {
+                "id": "0",
+                "label": {
+                  "en": "Feed to Grid",
+                  "de": "Ins Netz einspeisen"
+                }
+              },
+              {
+                "id": "1",
+                "label": {
+                  "en": "Charge Battery",
+                  "de": "Batterie laden"
+                }
+              }
+            ]
+          }
+        ]
+      },
       {
         "id": "luna2000_set_force_charge_discharge",
         "title": {
