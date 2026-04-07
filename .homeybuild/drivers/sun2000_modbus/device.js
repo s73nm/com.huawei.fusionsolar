@@ -86,11 +86,13 @@ class SUN2000ModbusDevice extends Device {
   async onInit() {
     this.log(`Device initialised: ${this.getName()}`);
     this._failureCount       = 0;
+    this._prevDeviceStatus   = null;
     this._updatingFromModbus = false;
     this._writeInProgress    = false;
     this._controlPollCounter = 0; // throttle: read control registers every 5th poll
     await this._ensureCapabilities();
     this._registerControlListeners();
+    this._registerFlowActions();
     await this._startPolling();
 
     this._fetchAndUpdate().catch((err) => {
@@ -166,6 +168,43 @@ class SUN2000ModbusDevice extends Device {
     }
   }
 
+  // ─── Flow actions ──────────────────────────────────────────────────────────
+
+  _registerFlowActions() {
+    this.homey.flow
+      .getDeviceTriggerCard('sun2000_status_changed')
+      .registerRunListener((args, state) => args.status === state.status);
+
+    this.homey.flow
+      .getConditionCard('sun2000_status_is')
+      .registerRunListener((args) => this.getCapabilityValue('huawei_status') === args.status);
+
+    const host   = () => this.getSetting('address');
+    const port   = () => parseInt(this.getSetting('port'), 10) || 502;
+    const unitId = () => parseInt(this.getSetting('modbus_id'), 10) || 1;
+
+    this.homey.flow
+      .getActionCard('sun2000_set_active_power_mode')
+      .registerRunListener(async ({ mode }) => {
+        const reg   = CONTROL_WRITE_MAP.activepower_controlmode;
+        const value = parseInt(mode, 10);
+        this.log(`Write start  [sun2000_set_active_power_mode → reg ${reg}] value=${value}`);
+        this._writeInProgress = true;
+        try {
+          await writeModbusRegister(host(), port(), unitId(), reg, value);
+          this.log(`Write OK     [sun2000_set_active_power_mode → reg ${reg}]`);
+          this._updatingFromModbus = true;
+          await this._set('activepower_controlmode', mode).catch(() => {});
+        } catch (err) {
+          this.error(`Write failed [sun2000_set_active_power_mode → reg ${reg}]:`, err.message);
+          throw err;
+        } finally {
+          this._updatingFromModbus = false;
+          this._writeInProgress   = false;
+        }
+      });
+  }
+
   // ─── Polling ───────────────────────────────────────────────────────────────
 
   _intervalMs() {
@@ -226,7 +265,13 @@ class SUN2000ModbusDevice extends Device {
       await this._set('measure_current.pv2',        data.pv2Current ?? null);
 
       if (data.deviceStatus !== null && data.deviceStatus !== undefined) {
-        await this._set('huawei_status', statusLabel(data.deviceStatus));
+        const label = statusLabel(data.deviceStatus);
+        await this._set('huawei_status', label);
+        if (this._prevDeviceStatus !== null && label !== this._prevDeviceStatus) {
+          this.homey.flow.getDeviceTriggerCard('sun2000_status_changed')
+            .trigger(this, { status: label }, { status: label }).catch(() => {});
+        }
+        this._prevDeviceStatus = label;
       }
 
       await this._fetchPowerMeter(address, port, modbusId, abort);

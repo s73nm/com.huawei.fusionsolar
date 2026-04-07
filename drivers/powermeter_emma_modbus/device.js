@@ -19,6 +19,15 @@ const REQUIRED_CAPABILITIES = [
   'meter_power.exported_today',      // Feed-in to Grid Today (kWh)
   'measure_power.load',              // House Consumption Live (W)
   'meter_power.consumption_today',   // House Consumption Today (kWh)
+  'measure_voltage.phase1',          // Phase A Voltage (V)
+  'measure_voltage.phase2',          // Phase B Voltage (V)
+  'measure_voltage.phase3',          // Phase C Voltage (V)
+  'measure_current.phase1',          // Phase A Current (A)
+  'measure_current.phase2',          // Phase B Current (A)
+  'measure_current.phase3',          // Phase C Current (A)
+  'measure_power.phase1',            // Phase A Active Power (W)
+  'measure_power.phase2',            // Phase B Active Power (W)
+  'measure_power.phase3',            // Phase C Active Power (W)
 ];
 
 class PowerMeterEmmaModbusDevice extends Device {
@@ -29,6 +38,7 @@ class PowerMeterEmmaModbusDevice extends Device {
     this._failureCount    = 0;
     this._fetchInProgress = false;
     await this._ensureCapabilities();
+    this._registerConditions();
     await this._startPolling();
 
     this._fetchAndUpdate().catch((err) => {
@@ -48,6 +58,14 @@ class PowerMeterEmmaModbusDevice extends Device {
 
   async onUninit() { await this._stopPolling(); }
   async onDeleted() { await this._stopPolling(); }
+
+  // ─── Conditions ────────────────────────────────────────────────────────────
+
+  _registerConditions() {
+    this.homey.flow
+      .getConditionCard('grid_is_exporting')
+      .registerRunListener((args) => args.device._prevExporting === true);
+  }
 
   // ─── Capabilities ──────────────────────────────────────────────────────────
 
@@ -120,6 +138,18 @@ class PowerMeterEmmaModbusDevice extends Device {
       await this._set('meter_power.exported_today',    d.feedInToGridToday    ?? null);
       await this._set('measure_power.load',            d.loadPower            ?? null);
       await this._set('meter_power.consumption_today', d.consumptionToday     ?? null);
+
+      // Phase data (built-in meter) — same sign convention as feedInPower: + = export → negate
+      const negate = (v) => (v !== null && v !== undefined) ? -v : null;
+      await this._set('measure_voltage.phase1', d.phaseAVoltage ?? null);
+      await this._set('measure_voltage.phase2', d.phaseBVoltage ?? null);
+      await this._set('measure_voltage.phase3', d.phaseCVoltage ?? null);
+      await this._set('measure_current.phase1', d.phaseACurrent ?? null);
+      await this._set('measure_current.phase2', d.phaseBCurrent ?? null);
+      await this._set('measure_current.phase3', d.phaseCCurrent ?? null);
+      await this._set('measure_power.phase1',   negate(d.phaseAPower));
+      await this._set('measure_power.phase2',   negate(d.phaseBPower));
+      await this._set('measure_power.phase3',   negate(d.phaseCPower));
 
       // Fire export/import transition triggers (null = first run, skip)
       if (gridPower !== null && this._prevExporting !== null) {

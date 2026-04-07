@@ -10,6 +10,11 @@ const { readModbusRegisters } = require('../../lib/modbus-client');
 const DEFAULT_INTERVAL_S = 60;
 const MIN_INTERVAL_S     = 10;
 
+const METER_STATUS_MAP = {
+  0: 'Offline',
+  1: 'Normal',
+};
+
 const REQUIRED_CAPABILITIES = [
   'measure_power',           // grid active power (W): positive = import, negative = export
   'meter_power',             // grid accumulated / imported energy (kWh)
@@ -23,6 +28,7 @@ const REQUIRED_CAPABILITIES = [
   'measure_power.phase1',
   'measure_power.phase2',
   'measure_power.phase3',
+  'dtsu666_meter_status',
 ];
 
 class DTSU666ModbusDevice extends Device {
@@ -30,8 +36,10 @@ class DTSU666ModbusDevice extends Device {
   async onInit() {
     this.log(`Device initialised: ${this.getName()}`);
     this._prevExporting   = null;
+    this._prevMeterStatus = null;
     this._failureCount    = 0;
     await this._ensureCapabilities();
+    this._registerConditions();
     await this._startPolling();
 
     this._fetchAndUpdate().catch((err) => {
@@ -55,6 +63,22 @@ class DTSU666ModbusDevice extends Device {
 
   async onDeleted() {
     await this._stopPolling();
+  }
+
+  // ─── Conditions ────────────────────────────────────────────────────────────
+
+  _registerConditions() {
+    this.homey.flow
+      .getConditionCard('grid_is_exporting')
+      .registerRunListener((args) => args.device._prevExporting === true);
+
+    this.homey.flow
+      .getDeviceTriggerCard('dtsu666_meter_status_changed')
+      .registerRunListener((args, state) => args.status === state.status);
+
+    this.homey.flow
+      .getConditionCard('dtsu666_meter_status_is')
+      .registerRunListener((args) => this.getCapabilityValue('dtsu666_meter_status') === args.status);
   }
 
   // ─── Capabilities ──────────────────────────────────────────────────────────
@@ -109,6 +133,17 @@ class DTSU666ModbusDevice extends Device {
 
     try {
       const meter = await readModbusRegisters(address, port, modbusId, POWER_METER_REGISTERS);
+
+      // Always update meter status — even when meter is offline
+      if (meter.meterStatus !== null && meter.meterStatus !== undefined) {
+        const meterLabel = METER_STATUS_MAP[meter.meterStatus] ?? `Status ${meter.meterStatus}`;
+        await this._set('dtsu666_meter_status', meterLabel);
+        if (this._prevMeterStatus !== null && meterLabel !== this._prevMeterStatus) {
+          this.homey.flow.getDeviceTriggerCard('dtsu666_meter_status_changed')
+            .trigger(this, { status: meterLabel }, { status: meterLabel }).catch(() => {});
+        }
+        this._prevMeterStatus = meterLabel;
+      }
 
       if (!isPowerMeterDataValid(meter)) {
         this._failureCount += 1;

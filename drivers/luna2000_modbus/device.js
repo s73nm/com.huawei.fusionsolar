@@ -64,6 +64,7 @@ class LUNA2000ModbusDevice extends Device {
   async onInit() {
     this.log(`Device initialised: ${this.getName()}`);
     this._prevChargingState  = null;
+    this._prevBatteryStatus  = null;
     this._failureCount       = 0;
     this._updatingFromModbus = false;
     this._writeInProgress    = false;
@@ -71,6 +72,7 @@ class LUNA2000ModbusDevice extends Device {
     await this._ensureCapabilities();
     this._registerControlListeners();
     this._registerFlowActions();
+    this._registerConditions();
     await this._startPolling();
 
     this._fetchAndUpdate().catch((err) => {
@@ -150,27 +152,64 @@ class LUNA2000ModbusDevice extends Device {
     const port   = () => parseInt(this.getSetting('port'), 10) || 502;
     const unitId = () => parseInt(this.getSetting('modbus_id'), 10) || 1;
 
+    const writeEnum = async (cardId, capabilityId, mode) => {
+      const reg   = CONTROL_WRITE_MAP[capabilityId];
+      const value = parseInt(mode, 10);
+      this.log(`Write start  [${cardId} → reg ${reg}] value=${value}`);
+      this._writeInProgress = true;
+      try {
+        await writeModbusRegister(host(), port(), unitId(), reg, value);
+        this.log(`Write OK     [${cardId} → reg ${reg}]`);
+        this._updatingFromModbus = true;
+        await this._set(capabilityId, mode).catch(() => {});
+      } catch (err) {
+        this.error(`Write failed [${cardId} → reg ${reg}]:`, err.message);
+        throw err;
+      } finally {
+        this._updatingFromModbus = false;
+        this._writeInProgress   = false;
+      }
+    };
+
+    this.homey.flow
+      .getActionCard('luna2000_set_working_mode')
+      .registerRunListener(async ({ mode }) =>
+        writeEnum('luna2000_set_working_mode', 'storage_working_mode_settings', mode));
+
+    this.homey.flow
+      .getActionCard('luna2000_set_excess_pv')
+      .registerRunListener(async ({ mode }) =>
+        writeEnum('luna2000_set_excess_pv', 'storage_excess_pv_energy_use_in_tou', mode));
+
+    this.homey.flow
+      .getActionCard('luna2000_set_remote_mode')
+      .registerRunListener(async ({ mode }) =>
+        writeEnum('luna2000_set_remote_mode', 'remote_charge_discharge_control_mode', mode));
+
     this.homey.flow
       .getActionCard('luna2000_set_force_charge_discharge')
-      .registerRunListener(async ({ mode }) => {
-        const value = parseInt(mode, 10);
-        const reg = CONTROL_WRITE_MAP.storage_force_charge_discharge;
-        this.log(`Write start  [luna2000_set_force_charge_discharge → reg ${reg}] value=${value}`);
-        this._writeInProgress = true;
-        try {
-          // Flow actions: await the write so the flow can report errors properly.
-          await writeModbusRegister(host(), port(), unitId(), reg, value);
-          this.log(`Write OK     [luna2000_set_force_charge_discharge → reg ${reg}]`);
-          this._updatingFromModbus = true;
-          await this._set('storage_force_charge_discharge', mode).catch(() => {});
-        } catch (err) {
-          this.error(`Write failed [luna2000_set_force_charge_discharge → reg ${reg}]:`, err.message);
-          throw err;
-        } finally {
-          this._updatingFromModbus = false;
-          this._writeInProgress = false;
-        }
-      });
+      .registerRunListener(async ({ mode }) =>
+        writeEnum('luna2000_set_force_charge_discharge', 'storage_force_charge_discharge', mode));
+  }
+
+  // ─── Conditions ────────────────────────────────────────────────────────────
+
+  _registerConditions() {
+    this.homey.flow
+      .getConditionCard('luna2000_is_charging')
+      .registerRunListener((args) => args.device._prevChargingState === 'charging');
+
+    this.homey.flow
+      .getConditionCard('luna2000_is_discharging')
+      .registerRunListener((args) => args.device._prevChargingState === 'discharging');
+
+    this.homey.flow
+      .getDeviceTriggerCard('luna2000_battery_status_changed')
+      .registerRunListener((args, state) => args.status === state.status);
+
+    this.homey.flow
+      .getConditionCard('luna2000_battery_status_is')
+      .registerRunListener((args) => this.getCapabilityValue('luna2000_battery_status') === args.status);
   }
 
   // ─── Polling ───────────────────────────────────────────────────────────────
@@ -246,7 +285,13 @@ class LUNA2000ModbusDevice extends Device {
       await this._set('measure_power.chargesetting',   batt.storageMaxChargePower ?? null);
       await this._set('measure_power.dischargesetting', batt.storageMaxDischargePower ?? null);
       if (batt.storageUnit1Status !== null && batt.storageUnit1Status !== undefined) {
-        await this._set('luna2000_battery_status', UNIT1_STATUS_MAP[batt.storageUnit1Status] ?? `Status ${batt.storageUnit1Status}`);
+        const statusLabel = UNIT1_STATUS_MAP[batt.storageUnit1Status] ?? `Status ${batt.storageUnit1Status}`;
+        await this._set('luna2000_battery_status', statusLabel);
+        if (this._prevBatteryStatus !== null && statusLabel !== this._prevBatteryStatus) {
+          this.homey.flow.getDeviceTriggerCard('luna2000_battery_status_changed')
+            .trigger(this, { status: statusLabel }, { status: statusLabel }).catch(() => {});
+        }
+        this._prevBatteryStatus = statusLabel;
       }
       await this._set('meter_power.today_batt_input',  batt.storageDayCharge ?? null);
       await this._set('meter_power.today_batt_output', batt.storageDayDischarge ?? null);
@@ -270,6 +315,13 @@ class LUNA2000ModbusDevice extends Device {
           .getDeviceTriggerCard('luna2000_charging_state_changed')
           .trigger(this, { state: chargingState })
           .catch(() => {});
+        if (chargingState === 'charging') {
+          this.homey.flow.getDeviceTriggerCard('luna2000_charging_started')
+            .trigger(this, {}).catch(() => {});
+        } else if (chargingState === 'discharging') {
+          this.homey.flow.getDeviceTriggerCard('luna2000_discharging_started')
+            .trigger(this, {}).catch(() => {});
+        }
       }
       this._prevChargingState = chargingState;
 

@@ -16,6 +16,7 @@ const MIN_INTERVAL_S     = 10;
 const REQUIRED_CAPABILITIES = [
   'measure_power',                   // PV Output Power (W)
   'measure_power.active_power',      // Inverter Active Power (W)
+  'measure_temperature.invertor',    // Inverter Temperature (°C) — register 30508
   'meter_power',                     // Inverter Total Yield (kWh)
   'meter_power.daily',               // Inverter Yield Today (kWh)
   'measure_power.grid_active_power', // Grid Active Power (W): + = import, − = export
@@ -127,6 +128,7 @@ class SUN2000EmmaModbusDevice extends Device {
       await this._set('meter_power.grid_import',         d.totalSupplyFromGrid  ?? null);
       await this._set('meter_power.pv_total',            d.totalPvEnergyYield   ?? null);
       await this._set('meter_power.pv_daily',            d.pvYieldToday         ?? null);
+      await this._set('measure_temperature.invertor',    d.inverterTemperature  ?? null);
 
       if (prevPower !== newPower) {
         await this.homey.flow

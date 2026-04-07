@@ -26,7 +26,8 @@ class SmartChargerModbusDevice extends Device {
 
   async onInit() {
     this.log(`[SmartCharger] Device initialised: ${this.getName()}`);
-    this._failureCount = 0;
+    this._failureCount      = 0;
+    this._prevChargingState = null;
     await this._ensureCapabilities();
     await this._startPolling();
 
@@ -133,13 +134,19 @@ class SmartChargerModbusDevice extends Device {
       const hasVoltage = (d.phaseAVoltage ?? 0) > 10
         || (d.phaseBVoltage ?? 0) > 10
         || (d.phaseCVoltage ?? 0) > 10;
-      await this._set('evcharger_charging_state', hasVoltage ? 'charging' : 'idle');
+      const chargingState = hasVoltage ? 'charging' : 'idle';
+      await this._set('evcharger_charging_state', chargingState);
 
-      // measure_power: not available from these registers
-      // Set to 0 if no previous value exists yet
-      if (this.getCapabilityValue('measure_power') === null) {
-        await this._set('measure_power', 0);
+      if (this._prevChargingState !== null && chargingState !== this._prevChargingState) {
+        if (chargingState === 'charging') {
+          this.homey.flow.getDeviceTriggerCard('smartcharger_charging_started')
+            .trigger(this, {}).catch(() => {});
+        } else {
+          this.homey.flow.getDeviceTriggerCard('smartcharger_charging_stopped')
+            .trigger(this, {}).catch(() => {});
+        }
       }
+      this._prevChargingState = chargingState;
 
       this._failureCount = 0;
       if (!this.getAvailable()) await this.setAvailable();

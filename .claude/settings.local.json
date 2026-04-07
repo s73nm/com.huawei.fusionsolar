@@ -95,7 +95,10 @@
       "Bash(node -e \"let d=''''''''; process.stdin.on\\(''''data'''',c=>d+=c\\); process.stdin.on\\(''''end'''',\\(\\)=>{const j=JSON.parse\\(d\\); j.forEach\\(f=>console.log\\(f.type, f.name, f.sha\\)\\);}\\);\")",
       "Bash(curl -s \"https://api.github.com/repos/biemond/solaredge.modbus/git/blobs/e474a8cdd64e2f95a1137168d7aee92e92ef0c55\")",
       "Bash(curl -s \"https://api.github.com/repos/biemond/solaredge.modbus/git/blobs/56e0727c8c603ca13cc5113260f75f39f5892dde\")",
-      "Bash(homey app:*)"
+      "Bash(homey app:*)",
+      "Bash(node -e \"const fs = require\\(''fs''\\); try { JSON.parse\\(fs.readFileSync\\(''app.json'', ''utf8''\\)\\); console.log\\(''JSON is valid''\\); } catch\\(e\\) { console.log\\(''JSON ERROR at line '' + e.message\\); }\")",
+      "Bash(node -e \"const fs = require\\(''fs''\\); const path = require\\(''path''\\); const app = JSON.parse\\(fs.readFileSync\\(''app.json'', ''utf8''\\)\\); console.log\\(''Custom capabilities defined:'', Object.keys\\(app.capabilities\\).filter\\(c => c.includes\\(''evcharger''\\) || c.includes\\(''charging''\\)\\)\\);\")",
+      "Bash(node -e \"const fs = require\\(''fs''\\); const app = JSON.parse\\(fs.readFileSync\\(''app.json'', ''utf8''\\)\\); const smartcharger = app.drivers.find\\(d => d.id === ''smartcharger_emma_modbus''\\); console.log\\(JSON.stringify\\(smartcharger.capabilities, null, 2\\)\\);\")"
     ]
   }
 }

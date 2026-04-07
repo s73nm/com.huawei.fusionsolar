@@ -67,6 +67,7 @@ const DEVICE_STATUS_MAP = {
 // External power meter registers (e.g. DTSU666-H)
 // Only present when a smart meter is connected to the SUN2000
 const POWER_METER_REGISTERS = {
+  meterStatus:           [37100, 1, 'UINT16', 'Meter Status',                  0],
   gridPhaseAVoltage:     [37101, 2, 'INT32', 'Grid Phase A Voltage (V)',      -1],
   gridPhaseBVoltage:     [37103, 2, 'INT32', 'Grid Phase B Voltage (V)',      -1],
   gridPhaseCVoltage:     [37105, 2, 'INT32', 'Grid Phase C Voltage (V)',      -1],
@@ -108,6 +109,17 @@ const BATTERY_REGISTERS = {
 //   batteryPower    (+) = charging,                      (−) = discharging
 // → negate feedInPower in device.js so Homey uses (+) = import, (−) = export
 const EMMA_REGISTERS = {
+  // ── Built-in meter phase data ─────────────────────────────────────────────
+  phaseAVoltage:         [31639, 2, 'UINT32', 'Phase A Voltage (V)',               -2],
+  phaseBVoltage:         [31641, 2, 'UINT32', 'Phase B Voltage (V)',               -2],
+  phaseCVoltage:         [31643, 2, 'UINT32', 'Phase C Voltage (V)',               -2],
+  phaseACurrent:         [31651, 2, 'INT32',  'Phase A Current (A)',               -1],
+  phaseBCurrent:         [31653, 2, 'INT32',  'Phase B Current (A)',               -1],
+  phaseCCurrent:         [31655, 2, 'INT32',  'Phase C Current (A)',               -1],
+  phaseAPower:           [31665, 2, 'INT32',  'Phase A Active Power (W)',           0],
+  phaseBPower:           [31667, 2, 'INT32',  'Phase B Active Power (W)',           0],
+  phaseCPower:           [31669, 2, 'INT32',  'Phase C Active Power (W)',           0],
+
   // ── Instantaneous power (W) ───────────────────────────────────────────────
   pvOutputPower:         [30354, 2, 'UINT32', 'PV Output Power (W)',                0],
   loadPower:             [30356, 2, 'UINT32', 'Load Power / House Consumption (W)', 0],
@@ -125,6 +137,7 @@ const EMMA_REGISTERS = {
   totalSupplyFromGrid:   [30338, 4, 'UINT64', 'Total Supply from Grid (kWh)',      -2],  // Netzbezug gesamt
   totalFeedInToGrid:     [30332, 4, 'UINT64', 'Total Feed-in to Grid (kWh)',       -2],  // Netzeinspeisung gesamt
   totalEnergyConsumption:[30326, 4, 'UINT64', 'Total Energy Consumption (kWh)',    -2],  // Hausverbrauch gesamt
+  inverterTemperature:   [30508, 2, 'INT32',  'Inverter Temperature (°C)',          -1],
   totalPvEnergyYield:    [30348, 4, 'UINT64', 'Total PV Energy Yield (kWh)',       -2],
   inverterTotalYield:    [30344, 2, 'UINT32', 'Inverter Total Energy Yield (kWh)', -2],
   totalChargedEnergy:    [30308, 4, 'UINT64', 'Total Charged Energy (kWh)',        -2],
@@ -181,6 +194,15 @@ const POWERMETER_EMMA_DATA_REGISTERS = {
   supplyFromGridToday: EMMA_REGISTERS.supplyFromGridToday, // 30336, UINT32, kWh
   loadPower:           EMMA_REGISTERS.loadPower,           // 30356, UINT32, W
   consumptionToday:    EMMA_REGISTERS.consumptionToday,    // 30324, UINT32, kWh
+  phaseAVoltage:       EMMA_REGISTERS.phaseAVoltage,       // 31639, UINT32, V
+  phaseBVoltage:       EMMA_REGISTERS.phaseBVoltage,       // 31641, UINT32, V
+  phaseCVoltage:       EMMA_REGISTERS.phaseCVoltage,       // 31643, UINT32, V
+  phaseACurrent:       EMMA_REGISTERS.phaseACurrent,       // 31651, INT32,  A
+  phaseBCurrent:       EMMA_REGISTERS.phaseBCurrent,       // 31653, INT32,  A
+  phaseCCurrent:       EMMA_REGISTERS.phaseCCurrent,       // 31655, INT32,  A
+  phaseAPower:         EMMA_REGISTERS.phaseAPower,         // 31665, INT32,  W  (+ export, − import)
+  phaseBPower:         EMMA_REGISTERS.phaseBPower,         // 31667, INT32,  W  (+ export, − import)
+  phaseCPower:         EMMA_REGISTERS.phaseCPower,         // 31669, INT32,  W  (+ export, − import)
 };
 
 function isPowerMeterEmmaDataValid(data) {
@@ -201,6 +223,7 @@ const SUN2000_EMMA_DATA_REGISTERS = {
   totalSupplyFromGrid: EMMA_REGISTERS.totalSupplyFromGrid, // 30338, UINT64, kWh
   totalPvEnergyYield:  EMMA_REGISTERS.totalPvEnergyYield,  // 30348, UINT64, kWh
   pvYieldToday:        EMMA_REGISTERS.pvYieldToday,        // 30346, UINT32, kWh
+  inverterTemperature: EMMA_REGISTERS.inverterTemperature, // 30508, INT32,  °C
 };
 
 function isSun2000EmmaDataValid(data) {

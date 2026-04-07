@@ -48,6 +48,8 @@ class LUNA2000EmmaModbusDevice extends Device {
     this._controlPollCounter         = 0;
     await this._ensureCapabilities();
     this._registerControlListeners();
+    this._registerFlowActions();
+    this._registerConditions();
     await this._startPolling();
 
     this._fetchAndUpdate().catch((err) => {
@@ -115,6 +117,56 @@ class LUNA2000EmmaModbusDevice extends Device {
           });
       });
     }
+  }
+
+  // ─── Flow actions ──────────────────────────────────────────────────────────
+
+  _registerFlowActions() {
+    const host   = () => this.getSetting('address');
+    const port   = () => parseInt(this.getSetting('port'), 10) || 502;
+    const unitId = () => parseInt(this.getSetting('modbus_id'), 10) || 0;
+
+    const writeEnum = async (cardId, regAddress, capabilityId, mode) => {
+      const value = parseInt(mode, 10);
+      this.log(`Write start  [${cardId} → reg ${regAddress}] value=${value}`);
+      this._writeInProgress = true;
+      try {
+        await writeModbusRegister(host(), port(), unitId(), regAddress, value);
+        this.log(`Write OK     [${cardId} → reg ${regAddress}]`);
+        this._updatingFromModbus = true;
+        await this._set(capabilityId, mode).catch(() => {});
+      } catch (err) {
+        this.error(`Write failed [${cardId} → reg ${regAddress}]:`, err.message);
+        throw err;
+      } finally {
+        this._updatingFromModbus = false;
+        this._writeInProgress   = false;
+      }
+    };
+
+    this.homey.flow
+      .getActionCard('luna2000_emma_set_working_mode')
+      .registerRunListener(async ({ mode }) => {
+        await writeEnum('luna2000_emma_set_working_mode', CONTROL_WRITE_MAP.storage_working_mode_settings, 'storage_working_mode_settings', mode);
+      });
+
+    this.homey.flow
+      .getActionCard('luna2000_emma_set_excess_pv')
+      .registerRunListener(async ({ mode }) => {
+        await writeEnum('luna2000_emma_set_excess_pv', CONTROL_WRITE_MAP.storage_excess_pv_energy_use_in_tou, 'storage_excess_pv_energy_use_in_tou', mode);
+      });
+  }
+
+  // ─── Conditions ────────────────────────────────────────────────────────────
+
+  _registerConditions() {
+    this.homey.flow
+      .getConditionCard('luna2000_is_charging')
+      .registerRunListener((args) => args.device._prevChargingState === 'charging');
+
+    this.homey.flow
+      .getConditionCard('luna2000_is_discharging')
+      .registerRunListener((args) => args.device._prevChargingState === 'discharging');
   }
 
   // ─── Polling ───────────────────────────────────────────────────────────────
@@ -210,6 +262,13 @@ class LUNA2000EmmaModbusDevice extends Device {
           .getDeviceTriggerCard('luna2000_charging_state_changed')
           .trigger(this, { state: chargingState })
           .catch(() => {});
+        if (chargingState === 'charging') {
+          this.homey.flow.getDeviceTriggerCard('luna2000_charging_started')
+            .trigger(this, {}).catch(() => {});
+        } else if (chargingState === 'discharging') {
+          this.homey.flow.getDeviceTriggerCard('luna2000_discharging_started')
+            .trigger(this, {}).catch(() => {});
+        }
       }
       this._prevChargingState = chargingState;
 
