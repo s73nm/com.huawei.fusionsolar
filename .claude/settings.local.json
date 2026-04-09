@@ -98,7 +98,13 @@
       "Bash(homey app:*)",
       "Bash(node -e \"const fs = require\\(''fs''\\); try { JSON.parse\\(fs.readFileSync\\(''app.json'', ''utf8''\\)\\); console.log\\(''JSON is valid''\\); } catch\\(e\\) { console.log\\(''JSON ERROR at line '' + e.message\\); }\")",
       "Bash(node -e \"const fs = require\\(''fs''\\); const path = require\\(''path''\\); const app = JSON.parse\\(fs.readFileSync\\(''app.json'', ''utf8''\\)\\); console.log\\(''Custom capabilities defined:'', Object.keys\\(app.capabilities\\).filter\\(c => c.includes\\(''evcharger''\\) || c.includes\\(''charging''\\)\\)\\);\")",
-      "Bash(node -e \"const fs = require\\(''fs''\\); const app = JSON.parse\\(fs.readFileSync\\(''app.json'', ''utf8''\\)\\); const smartcharger = app.drivers.find\\(d => d.id === ''smartcharger_emma_modbus''\\); console.log\\(JSON.stringify\\(smartcharger.capabilities, null, 2\\)\\);\")"
+      "Bash(node -e \"const fs = require\\(''fs''\\); const app = JSON.parse\\(fs.readFileSync\\(''app.json'', ''utf8''\\)\\); const smartcharger = app.drivers.find\\(d => d.id === ''smartcharger_emma_modbus''\\); console.log\\(JSON.stringify\\(smartcharger.capabilities, null, 2\\)\\);\")",
+      "Bash(node -e ':*)",
+      "WebFetch(domain:community.home-assistant.io)",
+      "WebFetch(domain:docs.eniris.be)",
+      "WebFetch(domain:photomate.zendesk.com)",
+      "WebFetch(domain:devicelib.my-gekko.com)",
+      "WebFetch(domain:flows.nodered.org)"
     ]
   }
 }

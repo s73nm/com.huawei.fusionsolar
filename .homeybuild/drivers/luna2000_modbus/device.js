@@ -6,7 +6,7 @@ const {
   CONTROL_REGISTERS,
   isBatteryDataValid,
 } = require('../../lib/modbus-registers');
-const { readModbusRegisters, writeModbusRegister } = require('../../lib/modbus-client');
+const { readModbusRegisters, writeModbusRegister, writeModbusU32 } = require('../../lib/modbus-client');
 
 const DEFAULT_INTERVAL_S = 60;
 const MIN_INTERVAL_S = 10;
@@ -49,6 +49,14 @@ const STORAGE_CONTROL_REGISTERS = {
   storageForceChargeDischarge:      CONTROL_REGISTERS.storageForceChargeDischarge,
   storageExcessPvEnergyUseInTou:    CONTROL_REGISTERS.storageExcessPvEnergyUseInTou,
   remoteChargeDischargeControlMode: CONTROL_REGISTERS.remoteChargeDischargeControlMode,
+  storageMaxChargePower:            CONTROL_REGISTERS.storageMaxChargePower,
+  storageMaxDischargePower:         CONTROL_REGISTERS.storageMaxDischargePower,
+  storageChargingCutoffCapacity:    CONTROL_REGISTERS.storageChargingCutoffCapacity,
+  storageDischargeCutoffCapacity:   CONTROL_REGISTERS.storageDischargeCutoffCapacity,
+  storageChargeFromGrid:            CONTROL_REGISTERS.storageChargeFromGrid,
+  storageGridChargeCutoffSoc:       CONTROL_REGISTERS.storageGridChargeCutoffSoc,
+  storageMaxGridChargePower:        CONTROL_REGISTERS.storageMaxGridChargePower,
+  storageBackupPowerSoc:            CONTROL_REGISTERS.storageBackupPowerSoc,
 };
 
 // Maps writable enum capability → Modbus register address (47xxx)
@@ -63,12 +71,15 @@ class LUNA2000ModbusDevice extends Device {
 
   async onInit() {
     this.log(`Device initialised: ${this.getName()}`);
-    this._prevChargingState  = null;
-    this._prevBatteryStatus  = null;
-    this._failureCount       = 0;
-    this._updatingFromModbus = false;
-    this._writeInProgress    = false;
-    this._controlPollCounter = 0; // throttle: read control registers every 5th poll
+    this._prevChargingState         = null;
+    this._prevBatteryStatus         = null;
+    this._failureCount              = 0;
+    this._updatingFromModbus        = false;
+    this._updatingSettingFromModbus = false;
+    this._writeInProgress           = false;
+    this._settingsInitialized       = false; // true after first successful _fetchControl
+    this._controlPollCounter        = 4;     // start at 4 so first poll immediately reads control registers
+    this._forceTimer                = null;  // pending auto-stop timer for timed force charge/discharge
     await this._ensureCapabilities();
     this._registerControlListeners();
     this._registerFlowActions();
@@ -80,7 +91,7 @@ class LUNA2000ModbusDevice extends Device {
     });
   }
 
-  async onSettings({ changedKeys }) {
+  async onSettings({ newSettings, changedKeys }) {
     if (['address', 'port', 'modbus_id', 'poll_interval'].some((k) => changedKeys.includes(k))) {
       await this._stopPolling();
       await this._startPolling();
@@ -88,13 +99,57 @@ class LUNA2000ModbusDevice extends Device {
         this.error('Fetch after settings change failed:', err.message);
       });
     }
+
+    if (!this._updatingSettingFromModbus && this._settingsInitialized) {
+      const address  = this.getSetting('address');
+      const port     = parseInt(this.getSetting('port'), 10) || 502;
+      const modbusId = parseInt(this.getSetting('modbus_id'), 10) || 1;
+
+      if (changedKeys.includes('charge_from_grid')) {
+        const raw = newSettings.charge_from_grid ? 1 : 0;
+        this.log(`Write charge_from_grid: ${raw} → reg 47087`);
+        writeModbusRegister(address, port, modbusId, 47087, raw)
+          .catch((err) => this.error('charge_from_grid write failed:', err.message));
+      }
+
+      const socSettings = {
+        grid_charge_cutoff_soc:   { reg: 47088, scale: 10, u32: false },
+        charging_cutoff_capacity: { reg: 47081, scale: 10, u32: false },
+        discharge_cutoff_capacity:{ reg: 47082, scale: 10, u32: false },
+        backup_power_soc:         { reg: 47102, scale: 10, u32: false },
+      };
+      for (const [key, { reg, scale, u32 }] of Object.entries(socSettings)) {
+        if (changedKeys.includes(key)) {
+          const raw = Math.round(parseFloat(newSettings[key]) * scale);
+          this.log(`Write ${key}: ${newSettings[key]} → reg ${reg} raw=${raw}`);
+          (u32 ? writeModbusU32 : writeModbusRegister)(address, port, modbusId, reg, raw)
+            .catch((err) => this.error(`${key} write failed:`, err.message));
+        }
+      }
+
+      const wattSettings = {
+        max_charge_power:     { reg: 47075 },
+        max_discharge_power:  { reg: 47077 },
+        max_grid_charge_power:{ reg: 47244 },
+      };
+      for (const [key, { reg }] of Object.entries(wattSettings)) {
+        if (changedKeys.includes(key)) {
+          const raw = Math.round(parseFloat(newSettings[key]) || 0);
+          this.log(`Write ${key}: ${raw} W → reg ${reg}`);
+          writeModbusU32(address, port, modbusId, reg, raw)
+            .catch((err) => this.error(`${key} write failed:`, err.message));
+        }
+      }
+    }
   }
 
   async onUninit() {
+    if (this._forceTimer) { this.homey.clearTimeout(this._forceTimer); this._forceTimer = null; }
     await this._stopPolling();
   }
 
   async onDeleted() {
+    if (this._forceTimer) { this.homey.clearTimeout(this._forceTimer); this._forceTimer = null; }
     await this._stopPolling();
   }
 
@@ -197,15 +252,98 @@ class LUNA2000ModbusDevice extends Device {
         const h = host(), p = port(), u = unitId();
         const powerW  = Math.round(Math.max(0, power));
         const socRaw  = Math.round(Math.max(0, Math.min(100, target_soc)) * 10);
-        this.log(`Force charge: power=${powerW} W, SoC cutoff=${target_soc}% (raw ${socRaw})`);
+        this.log(`Force charge: power=${powerW} W, target SoC=${target_soc}% (raw ${socRaw})`);
         this._writeInProgress = true;
         try {
-          await writeModbusRegister(h, p, u, 47102, powerW);
-          await writeModbusRegister(h, p, u, 47104, socRaw);
-          await writeModbusRegister(h, p, u, 47100, 187); // 0xBB = Force Charge
+          await writeModbusU32(h, p, u, 47247, powerW);          // Force charge power (UINT32, raw=W)
+          await writeModbusRegister(h, p, u, 47101, socRaw);     // Target SOC (UINT16, raw = % × 10)
+          await writeModbusRegister(h, p, u, 47100, 1);          // Command: 1 = Charge
           this.log('Force charge command sent');
         } catch (err) {
           this.error('Force charge failed:', err.message);
+          throw err;
+        } finally {
+          this._writeInProgress = false;
+        }
+      });
+
+    this.homey.flow
+      .getActionCard('luna2000_start_force_discharge')
+      .registerRunListener(async ({ device, power, target_soc }) => {
+        const h = host(), p = port(), u = unitId();
+        const powerW  = Math.round(Math.max(0, power));
+        const socRaw  = Math.round(Math.max(0, Math.min(100, target_soc)) * 10);
+        this.log(`Force discharge: power=${powerW} W, stop at SoC=${target_soc}% (raw ${socRaw})`);
+        this._writeInProgress = true;
+        try {
+          await writeModbusU32(h, p, u, 47247, powerW);          // Force discharge power (UINT32, raw=W)
+          await writeModbusRegister(h, p, u, 47101, socRaw);     // Target SOC (UINT16, raw = % × 10)
+          await writeModbusRegister(h, p, u, 47100, 2);          // Command: 2 = Discharge
+          this.log('Force discharge command sent');
+        } catch (err) {
+          this.error('Force discharge failed:', err.message);
+          throw err;
+        } finally {
+          this._writeInProgress = false;
+        }
+      });
+
+    this.homey.flow
+      .getActionCard('luna2000_start_force_charge_duration')
+      .registerRunListener(async ({ device, power, duration }) => {
+        const h = host(), p = port(), u = unitId();
+        const powerW     = Math.round(Math.max(0, power));
+        const durationMs = Math.round(Math.max(1, duration) * 60 * 1000);
+        this.log(`Force charge for ${duration} min: power=${powerW} W`);
+        // Cancel any pending auto-stop from a previous timed command
+        if (this._forceTimer) { this.homey.clearTimeout(this._forceTimer); this._forceTimer = null; }
+        this._writeInProgress = true;
+        try {
+          await writeModbusU32(h, p, u, 47247, powerW);
+          await writeModbusRegister(h, p, u, 47100, 1);          // Command: 1 = Charge
+          this.log('Force charge (timed) command sent');
+          this._forceTimer = this.homey.setTimeout(async () => {
+            this._forceTimer = null;
+            try {
+              await writeModbusRegister(h, p, u, 47100, 0);      // Command: 0 = Stop
+              this.log(`Force charge auto-stopped after ${duration} min`);
+            } catch (err) {
+              this.error('Force charge auto-stop failed:', err.message);
+            }
+          }, durationMs);
+        } catch (err) {
+          this.error('Force charge (timed) failed:', err.message);
+          throw err;
+        } finally {
+          this._writeInProgress = false;
+        }
+      });
+
+    this.homey.flow
+      .getActionCard('luna2000_start_force_discharge_duration')
+      .registerRunListener(async ({ device, power, duration }) => {
+        const h = host(), p = port(), u = unitId();
+        const powerW     = Math.round(Math.max(0, power));
+        const durationMs = Math.round(Math.max(1, duration) * 60 * 1000);
+        this.log(`Force discharge for ${duration} min: power=${powerW} W`);
+        // Cancel any pending auto-stop from a previous timed command
+        if (this._forceTimer) { this.homey.clearTimeout(this._forceTimer); this._forceTimer = null; }
+        this._writeInProgress = true;
+        try {
+          await writeModbusU32(h, p, u, 47247, powerW);
+          await writeModbusRegister(h, p, u, 47100, 2);          // Command: 2 = Discharge
+          this.log('Force discharge (timed) command sent');
+          this._forceTimer = this.homey.setTimeout(async () => {
+            this._forceTimer = null;
+            try {
+              await writeModbusRegister(h, p, u, 47100, 0);      // Command: 0 = Stop
+              this.log(`Force discharge auto-stopped after ${duration} min`);
+            } catch (err) {
+              this.error('Force discharge auto-stop failed:', err.message);
+            }
+          }, durationMs);
+        } catch (err) {
+          this.error('Force discharge (timed) failed:', err.message);
           throw err;
         } finally {
           this._writeInProgress = false;
@@ -219,7 +357,7 @@ class LUNA2000ModbusDevice extends Device {
         this.log(`Set force charge power: ${powerW} W`);
         this._writeInProgress = true;
         try {
-          await writeModbusRegister(host(), port(), unitId(), 47102, powerW);
+          await writeModbusU32(host(), port(), unitId(), 47247, powerW); // UINT32, raw=W
           this.log('Force charge power written');
         } catch (err) {
           this.error('Set force charge power failed:', err.message);
@@ -230,14 +368,48 @@ class LUNA2000ModbusDevice extends Device {
       });
 
     this.homey.flow
+      .getActionCard('luna2000_set_charge_from_grid')
+      .registerRunListener(async ({ device, mode }) => {
+        const value = parseInt(mode, 10);
+        this.log(`Set charge from grid: ${value === 1 ? 'Enable' : 'Disable'} (reg 47087)`);
+        this._writeInProgress = true;
+        try {
+          await writeModbusRegister(host(), port(), unitId(), 47087, value);
+          this.log('Charge from grid written');
+        } catch (err) {
+          this.error('Set charge from grid failed:', err.message);
+          throw err;
+        } finally {
+          this._writeInProgress = false;
+        }
+      });
+
+    this.homey.flow
+      .getActionCard('luna2000_set_grid_charge_cutoff_soc')
+      .registerRunListener(async ({ device, target_soc }) => {
+        const socRaw = Math.round(Math.max(20, Math.min(100, target_soc)) * 10);
+        this.log(`Set grid charge cutoff SoC: ${target_soc}% (raw ${socRaw}, reg 47088)`);
+        this._writeInProgress = true;
+        try {
+          await writeModbusRegister(host(), port(), unitId(), 47088, socRaw);
+          this.log('Grid charge cutoff SoC written');
+        } catch (err) {
+          this.error('Set grid charge cutoff SoC failed:', err.message);
+          throw err;
+        } finally {
+          this._writeInProgress = false;
+        }
+      });
+
+    this.homey.flow
       .getActionCard('luna2000_set_force_charge_soc')
       .registerRunListener(async ({ device, target_soc }) => {
         const socRaw = Math.round(Math.max(0, Math.min(100, target_soc)) * 10);
-        this.log(`Set force charge cutoff SoC: ${target_soc}% (raw ${socRaw})`);
+        this.log(`Set force charge target SoC: ${target_soc}% (raw ${socRaw})`);
         this._writeInProgress = true;
         try {
-          await writeModbusRegister(host(), port(), unitId(), 47104, socRaw);
-          this.log('Force charge cutoff SoC written');
+          await writeModbusRegister(host(), port(), unitId(), 47101, socRaw); // UINT16, raw = % × 10
+          this.log('Force charge target SoC written');
         } catch (err) {
           this.error('Set force charge SoC failed:', err.message);
           throw err;
@@ -407,11 +579,48 @@ class LUNA2000ModbusDevice extends Device {
       await this._set('storage_force_charge_discharge',       toEnum(ctrl.storageForceChargeDischarge));
       await this._set('storage_excess_pv_energy_use_in_tou',  toEnum(ctrl.storageExcessPvEnergyUseInTou));
       await this._set('remote_charge_discharge_control_mode', toEnum(ctrl.remoteChargeDischargeControlMode));
+      this._updatingFromModbus = false;
+
+      // Sync settings from modbus if they differ
+      const settingUpdates = {};
+
+      if (ctrl.storageChargeFromGrid !== null && ctrl.storageChargeFromGrid !== undefined) {
+        const enabled    = ctrl.storageChargeFromGrid === 1;
+        const currentVal = this.getSetting('charge_from_grid');
+        if (currentVal === null || currentVal === undefined || enabled !== currentVal)
+          settingUpdates.charge_from_grid = enabled;
+      }
+      const numericSync = [
+        ['storageGridChargeCutoffSoc',     'grid_charge_cutoff_soc'],
+        ['storageChargingCutoffCapacity',  'charging_cutoff_capacity'],
+        ['storageDischargeCutoffCapacity', 'discharge_cutoff_capacity'],
+        ['storageMaxChargePower',          'max_charge_power'],
+        ['storageMaxDischargePower',       'max_discharge_power'],
+        ['storageMaxGridChargePower',      'max_grid_charge_power'],
+        ['storageBackupPowerSoc',          'backup_power_soc'],
+      ];
+      for (const [key, settingId] of numericSync) {
+        const v = ctrl[key];
+        if (v !== null && v !== undefined) {
+          const current = parseFloat(this.getSetting(settingId));
+          if (!Number.isFinite(current) || Math.abs(v - current) > 0.5) settingUpdates[settingId] = v;
+        }
+      }
+      if (Object.keys(settingUpdates).length > 0) {
+        this._updatingSettingFromModbus = true;
+        await this.setSettings(settingUpdates)
+          .catch((err) => this.log('setSettings sync failed:', err.message));
+        this._updatingSettingFromModbus = false;
+      }
+
+      // Mark settings as initialised — onSettings writes are now safe
+      this._settingsInitialized = true;
 
     } catch (err) {
       this.log('Control register read skipped:', err.message);
     } finally {
-      this._updatingFromModbus = false;
+      this._updatingFromModbus         = false;
+      this._updatingSettingFromModbus  = false;
     }
   }
 

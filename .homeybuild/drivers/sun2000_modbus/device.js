@@ -8,7 +8,7 @@ const {
   isPowerMeterDataValid,
   statusLabel,
 } = require('../../lib/modbus-registers');
-const { readModbusRegisters, writeModbusRegister } = require('../../lib/modbus-client');
+const { readModbusRegisters, writeModbusRegister, writeModbusU32 } = require('../../lib/modbus-client');
 
 const DEFAULT_INTERVAL_S = 60;
 const MIN_INTERVAL_S = 10;
@@ -77,9 +77,11 @@ const DEPRECATED_CAPABILITIES = [
   'meter_power.today_batt_output',
 ];
 
-// Only the inverter control register address (47xxx)
+// Only the inverter control register addresses (47xxx)
 const INVERTER_CONTROL_REGISTERS = {
-  activePowerControlMode: CONTROL_REGISTERS.activePowerControlMode,
+  activePowerControlMode:  CONTROL_REGISTERS.activePowerControlMode,
+  activePowerMaxFeedIn:    CONTROL_REGISTERS.activePowerMaxFeedIn,
+  activePowerMaxFeedInPct: CONTROL_REGISTERS.activePowerMaxFeedInPct,
 };
 
 // Maps writable enum capability → Modbus register address (47xxx)
@@ -91,11 +93,13 @@ class SUN2000ModbusDevice extends Device {
 
   async onInit() {
     this.log(`Device initialised: ${this.getName()}`);
-    this._failureCount       = 0;
-    this._prevDeviceStatus   = null;
-    this._updatingFromModbus = false;
-    this._writeInProgress    = false;
-    this._controlPollCounter = 0; // throttle: read control registers every 5th poll
+    this._failureCount              = 0;
+    this._prevDeviceStatus          = null;
+    this._updatingFromModbus        = false;
+    this._updatingSettingFromModbus = false;
+    this._writeInProgress           = false;
+    this._settingsInitialized       = false; // true after first successful _fetchControl
+    this._controlPollCounter        = 4; // start at 4 so first poll immediately reads control registers
     await this._ensureCapabilities();
     this._registerControlListeners();
     this._registerFlowActions();
@@ -106,13 +110,33 @@ class SUN2000ModbusDevice extends Device {
     });
   }
 
-  async onSettings({ changedKeys }) {
+  async onSettings({ newSettings, changedKeys }) {
     if (['address', 'port', 'modbus_id', 'poll_interval'].some((k) => changedKeys.includes(k))) {
       await this._stopPolling();
       await this._startPolling();
       this._fetchAndUpdate().catch((err) => {
         this.error('Fetch after settings change failed:', err.message);
       });
+    }
+
+    if (!this._updatingSettingFromModbus && this._settingsInitialized) {
+      const address  = this.getSetting('address');
+      const port     = parseInt(this.getSetting('port'), 10) || 502;
+      const modbusId = parseInt(this.getSetting('modbus_id'), 10) || 1;
+
+      if (changedKeys.includes('max_feed_in_power')) {
+        const raw = Math.round(parseFloat(newSettings.max_feed_in_power) || 0);
+        this.log(`Write max_feed_in_power: ${raw} W → reg 47416`);
+        writeModbusU32(address, port, modbusId, 47416, raw)
+          .catch((err) => this.error('max_feed_in_power write failed:', err.message));
+      }
+
+      if (changedKeys.includes('max_feed_in_power_pct')) {
+        const raw = Math.round((parseFloat(newSettings.max_feed_in_power_pct) || 0) * 10);
+        this.log(`Write max_feed_in_power_pct: ${newSettings.max_feed_in_power_pct} % → reg 47418 raw=${raw}`);
+        writeModbusRegister(address, port, modbusId, 47418, raw)
+          .catch((err) => this.error('max_feed_in_power_pct write failed:', err.message));
+      }
     }
   }
 
@@ -362,11 +386,36 @@ class SUN2000ModbusDevice extends Device {
 
       this._updatingFromModbus = true;
       await this._set('activepower_controlmode', toEnum(ctrl.activePowerControlMode));
+      this._updatingFromModbus = false;
+
+      // Sync feed-in power settings if they differ
+      const settingUpdates = {};
+      const numericSync = [
+        ['activePowerMaxFeedIn',    'max_feed_in_power',     1  ],
+        ['activePowerMaxFeedInPct', 'max_feed_in_power_pct', 0.5],
+      ];
+      for (const [key, settingId, tolerance] of numericSync) {
+        const v = ctrl[key];
+        if (v !== null && v !== undefined) {
+          const current = parseFloat(this.getSetting(settingId));
+          if (!Number.isFinite(current) || Math.abs(v - current) > tolerance) settingUpdates[settingId] = v;
+        }
+      }
+      if (Object.keys(settingUpdates).length > 0) {
+        this._updatingSettingFromModbus = true;
+        await this.setSettings(settingUpdates)
+          .catch((err) => this.log('setSettings sync failed:', err.message));
+        this._updatingSettingFromModbus = false;
+      }
+
+      // Mark settings as initialised — onSettings writes are now safe
+      this._settingsInitialized = true;
 
     } catch (err) {
       this.log('Control register read skipped:', err.message);
     } finally {
-      this._updatingFromModbus = false;
+      this._updatingFromModbus        = false;
+      this._updatingSettingFromModbus = false;
     }
   }
 

@@ -120,10 +120,9 @@ class SUN2000EmmaModbusDevice extends Device {
       await this._set('meter_power',                     d.inverterTotalYield   ?? null);
       await this._set('meter_power.daily',               d.inverterYieldToday   ?? null);
 
-      // feedInPower: + = export to grid, − = import from grid
-      // Homey convention for grid_active_power: + = import, − = export → negate
-      const feedIn = d.feedInPower ?? null;
-      await this._set('measure_power.grid_active_power', feedIn !== null ? -feedIn : null);
+      // feedInPower (register 30358): + = import from grid, − = export to grid
+      // Matches Homey convention directly — no negation needed.
+      await this._set('measure_power.grid_active_power', d.feedInPower ?? null);
       await this._set('meter_power.grid_export',         d.totalFeedInToGrid    ?? null);
       await this._set('meter_power.grid_import',         d.totalSupplyFromGrid  ?? null);
       await this._set('meter_power.pv_total',            d.totalPvEnergyYield   ?? null);
